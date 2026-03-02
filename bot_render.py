@@ -223,7 +223,6 @@ def run_bot():
             bot.infinity_polling(
                 timeout=60,
                 long_polling_timeout=60,
-                restart_on_change=True,  # Важно!
                 skip_pending=True  # Пропускаем старые обновления
             )
         except Exception as e:
