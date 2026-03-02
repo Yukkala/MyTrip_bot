@@ -188,26 +188,55 @@ def main_keyboard(has_sessions=False):
 
 # --- Запуск бота ---
 def run_bot():
-    """Запускает бота в фоновом потоке"""
+    """Запускает бота в фоновом потоке с очисткой вебхуков"""
     logger.info("🤖 Запуск бота...")
     retry_count = 0
     max_retries = 5
     
     while retry_count < max_retries:
         try:
-            logger.info("🔄 Удаление вебхука...")
+            logger.info("🔄 Очистка вебхуков и очереди обновлений...")
+            
+            # 1. Удаляем вебхук
             bot.remove_webhook()
             time.sleep(1)
             
+            # 2. Закрываем все активные сессии
+            bot.close()
+            time.sleep(1)
+            
+            # 3. Проверяем, что вебхук действительно удален
+            webhook_info = bot.get_webhook_info()
+            logger.info(f"📊 Информация о вебхуке: {webhook_info}")
+            
+            # 4. Удаляем ожидающие обновления (важно!)
+            updates = bot.get_updates(offset=-1, timeout=1)
+            if updates:
+                logger.info(f"🧹 Найдены ожидающие обновления: {len(updates)}")
+                # Подтверждаем получение обновлений
+                bot.get_updates(offset=updates[-1].update_id + 1, timeout=1)
+            
+            time.sleep(2)
+            
+            # 5. Запускаем polling с правильными параметрами
             logger.info("✅ Запуск polling...")
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            bot.infinity_polling(
+                timeout=60,
+                long_polling_timeout=60,
+                restart_on_change=True,  # Важно!
+                skip_pending=True  # Пропускаем старые обновления
+            )
         except Exception as e:
             retry_count += 1
             logger.error(f"❌ Ошибка в боте (попытка {retry_count}/{max_retries}): {e}")
-            time.sleep(5)
+            logger.error(f"Тип ошибки: {type(e).__name__}")
+            if "409" in str(e):
+                logger.error("⚠️ Конфликт: бот запущен в другом месте! Проверь локальный запуск.")
+                logger.error("💡 Закрой терминал с локальным ботом и подожди 30 секунд")
+            time.sleep(10)
     
     logger.error("❌ Бот остановлен после максимального числа попыток")
-
+    
 # --- Flask маршруты ---
 @app.route('/')
 def home():
