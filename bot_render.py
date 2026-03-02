@@ -188,53 +188,75 @@ def main_keyboard(has_sessions=False):
 
 # --- Запуск бота ---
 def run_bot():
-    """Запускает бота в фоновом потоке с очисткой вебхуков"""
+    """Запускает бота в фоновом потоке с защитой от ошибок"""
     logger.info("🤖 Запуск бота...")
     retry_count = 0
-    max_retries = 5
+    max_retries = 10
     
     while retry_count < max_retries:
         try:
-            logger.info("🔄 Очистка вебхуков и очереди обновлений...")
+            logger.info("🔄 Подготовка к запуску...")
             
-            # 1. Удаляем вебхук
-            bot.remove_webhook()
-            time.sleep(1)
+            # Удаляем вебхук
+            try:
+                bot.remove_webhook()
+                logger.info("✅ Вебхук удален")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при удалении вебхука: {e}")
             
-            # 2. Закрываем все активные сессии
-            bot.close()
-            time.sleep(1)
+            # Ждем немного
+            time.sleep(3)
             
-            # 3. Проверяем, что вебхук действительно удален
+            # Проверяем вебхук
             webhook_info = bot.get_webhook_info()
-            logger.info(f"📊 Информация о вебхуке: {webhook_info}")
+            logger.info(f"📊 Вебхук: {webhook_info}")
             
-            # 4. Удаляем ожидающие обновления (важно!)
-            updates = bot.get_updates(offset=-1, timeout=1)
-            if updates:
-                logger.info(f"🧹 Найдены ожидающие обновления: {len(updates)}")
-                # Подтверждаем получение обновлений
-                bot.get_updates(offset=updates[-1].update_id + 1, timeout=1)
+            # Очищаем старые обновления
+            try:
+                updates = bot.get_updates(offset=-1, timeout=1)
+                if updates:
+                    bot.get_updates(offset=updates[-1].update_id + 1, timeout=1)
+                    logger.info(f"🧹 Очищено {len(updates)} старых обновлений")
+            except:
+                pass
             
-            time.sleep(2)
+            # Ждем перед запуском
+            logger.info("⏳ Ожидание 5 секунд...")
+            time.sleep(5)
             
-            # 5. Запускаем polling с правильными параметрами
+            # Запускаем polling БЕЗ проблемных параметров
             logger.info("✅ Запуск polling...")
             bot.infinity_polling(
-                timeout=60,
-                long_polling_timeout=60,
-                skip_pending=True  # Пропускаем старые обновления
+                timeout=30,
+                long_polling_timeout=30,
+                skip_pending=True
             )
+            
         except Exception as e:
             retry_count += 1
-            logger.error(f"❌ Ошибка в боте (попытка {retry_count}/{max_retries}): {e}")
-            logger.error(f"Тип ошибки: {type(e).__name__}")
-            if "409" in str(e):
-                logger.error("⚠️ Конфликт: бот запущен в другом месте! Проверь локальный запуск.")
-                logger.error("💡 Закрой терминал с локальным ботом и подожди 30 секунд")
-            time.sleep(10)
+            error_str = str(e)
+            logger.error(f"❌ Ошибка (попытка {retry_count}/{max_retries}): {error_str}")
+            
+            if "429" in error_str:
+                # Ошибка слишком частых запросов
+                import re
+                match = re.search(r'retry after (\d+)', error_str)
+                wait_time = int(match.group(1)) + 5 if match else 60
+                logger.info(f"⏳ Telegram просит подождать {wait_time} секунд")
+                time.sleep(wait_time)
+                
+            elif "409" in error_str:
+                # Конфликт с другим экземпляром
+                logger.info("⏳ Конфликт, ждем 30 секунд...")
+                time.sleep(30)
+                
+            else:
+                # Другие ошибки
+                wait_time = min(30 * retry_count, 300)  # Максимум 5 минут
+                logger.info(f"⏳ Ждем {wait_time} секунд...")
+                time.sleep(wait_time)
     
-    logger.error("❌ Бот остановлен после максимального числа попыток")
+    logger.error("❌ Бот остановлен")
     
 # --- Flask маршруты ---
 @app.route('/')
