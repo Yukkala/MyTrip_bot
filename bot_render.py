@@ -7,6 +7,14 @@ TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
+if not TOKEN:
+    raise ValueError("Нет TELEGRAM_TOKEN")
+
+if not DATABASE_URL:
+    raise ValueError("Нет DATABASE_URL")
+
+bot = telebot.TeleBot(TOKEN)
+
 # -------------------
 # БАЗА ДАННЫХ
 # -------------------
