@@ -63,6 +63,14 @@ def init_db():
     );
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS expense_shares (
+        id SERIAL PRIMARY KEY,
+        expense_id INTEGER,
+        participant_id INTEGER
+    );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
