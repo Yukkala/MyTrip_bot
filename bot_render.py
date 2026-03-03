@@ -33,6 +33,7 @@ def init_db():
         id SERIAL PRIMARY KEY,
         chat_id BIGINT,
         name TEXT
+        is_active BOOLEAN
     );
     """)
 
@@ -78,34 +79,126 @@ def init_db():
 init_db()
 
 # -------------------
+# ВРЕМЕННОЕ ХРАНЕНИЕ СОСТОЯНИЯ
+# -------------------
+
+user_state = {}
+
+# -------------------
 # ЛОГИКА
 # -------------------
 
-@bot.message_handler(commands=["start"])
+# -------------------
+# Главное меню
+# -------------------
+
+from telebot import types
+
+def main_menu():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("➕ Новая встреча")
+    markup.add("📂 Мои встречи")
+    return markup
+
+
+@bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, "Бот учёта расходов работает 💰")
+    bot.send_message(
+        message.chat.id,
+        "Добро пожаловать 💚\nВыбери действие:",
+        reply_markup=main_menu()
+    )
 
-@bot.message_handler(commands=["new"])
-def new_session(message):
-    name = message.text.replace("/new", "").strip()
+# -------------------
+# Новая встреча
+# -------------------
 
-    if not name:
-        bot.send_message(message.chat.id, "Напиши: /new Название встречи")
-        return
+@bot.message_handler(func=lambda m: m.text == "➕ Новая встреча")
+def create_session(message):
+    msg = bot.send_message(message.chat.id, "Введите название встречи:")
+    bot.register_next_step_handler(msg, save_session)
+
+
+def save_session(message):
+    name = message.text
+    chat_id = message.chat.id
 
     conn = get_db()
     cur = conn.cursor()
 
     cur.execute(
-        "INSERT INTO sessions (chat_id, name) VALUES (%s, %s)",
-        (message.chat.id, name)
+        "INSERT INTO sessions (chat_id, name, is_active) VALUES (%s, %s, %s)",
+        (chat_id, name, True)
     )
 
     conn.commit()
     cur.close()
     conn.close()
 
-    bot.send_message(message.chat.id, f"Создана встреча: {name}")
+    bot.send_message(message.chat.id, f"Встреча '{name}' создана 🎉", reply_markup=main_menu())
+
+# -------------------
+# Список встреч
+# -------------------
+
+@bot.message_handler(func=lambda m: m.text == "📂 Мои встречи")
+def list_sessions(message):
+    chat_id = message.chat.id
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id, name FROM sessions WHERE chat_id = %s", (chat_id,))
+    sessions = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    if not sessions:
+        bot.send_message(message.chat.id, "У тебя пока нет встреч.", reply_markup=main_menu())
+        return
+
+    markup = types.InlineKeyboardMarkup()
+
+    for session in sessions:
+        markup.add(
+            types.InlineKeyboardButton(
+                session[1],
+                callback_data=f"open_session_{session[0]}"
+            )
+        )
+
+    bot.send_message(message.chat.id, "Твои встречи:", reply_markup=markup)
+    
+# -------------------
+# Открытие встречи
+# -------------------
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("open_session_"))
+def open_session(call):
+    session_id = int(call.data.split("_")[2])
+
+    user_state[call.message.chat.id] = {"session_id": session_id}
+
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("👥 Участники")
+    markup.add("💰 Добавить расход")
+    markup.add("📊 Баланс")
+    markup.add("⬅ Назад")
+
+    bot.send_message(
+        call.message.chat.id,
+        "Выбери действие:",
+        reply_markup=markup
+    )
+
+# -------------------
+# Кнопка назад
+# -------------------
+
+@bot.message_handler(func=lambda m: m.text == "⬅ Назад")
+def back_to_menu(message):
+    bot.send_message(message.chat.id, "Главное меню:", reply_markup=main_menu())
 
 # -------------------
 # WEBHOOK
