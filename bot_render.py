@@ -298,7 +298,77 @@ def list_participants(message):
         text += f"• {p[0]}\n"
 
     bot.send_message(chat_id, text)
-    
+
+# -------------------
+# Кнопка "Добавить расход"
+# -------------------
+
+@bot.message_handler(func=lambda m: m.text == "💰 Добавить расход")
+def add_expense_start(message):
+    msg = bot.send_message(message.chat.id, "Введите сумму расхода:")
+    bot.register_next_step_handler(msg, save_expense_amount)
+
+# -------------------
+# Сохраняем сумму
+# -------------------
+
+def save_expense_amount(message):
+    chat_id = message.chat.id
+
+    try:
+        amount = float(message.text.replace(",", "."))
+    except:
+        bot.send_message(chat_id, "Введите корректную сумму числом.")
+        return
+
+    user_state.setdefault(chat_id, {})
+    user_state[chat_id]["expense_amount"] = amount
+
+    session_id = user_state.get(chat_id, {}).get("session_id")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id, name FROM participants WHERE session_id = %s",
+        (session_id,)
+    )
+    participants = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    if not participants:
+        bot.send_message(chat_id, "Сначала добавьте участников.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+
+    for p in participants:
+        markup.add(
+            types.InlineKeyboardButton(
+                p[1],
+                callback_data=f"payer_{p[0]}"
+            )
+        )
+
+    bot.send_message(chat_id, "Кто оплатил?", reply_markup=markup)
+
+# -------------------
+# Выбор кто оплатил
+# -------------------
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("payer_"))
+def select_payer(call):
+    chat_id = call.message.chat.id
+    payer_id = int(call.data.split("_")[1])
+
+    user_state.setdefault(chat_id, {})
+    user_state[chat_id]["payer_id"] = payer_id
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Выбор плательщика сохранён ✅\nКатегории добавим следующим шагом.")
+
 # -------------------
 # WEBHOOK
 # -------------------
