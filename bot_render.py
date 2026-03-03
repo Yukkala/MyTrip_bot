@@ -72,6 +72,11 @@ def init_db():
     );
     """)
 
+    cur.execute("""
+    ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
