@@ -366,8 +366,75 @@ def select_payer(call):
     user_state.setdefault(chat_id, {})
     user_state[chat_id]["payer_id"] = payer_id
 
+    session_id = user_state[chat_id]["session_id"]
+
+    ensure_default_categories(session_id)
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id, name FROM categories WHERE session_id = %s",
+        (session_id,)
+    )
+    categories = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    markup = types.InlineKeyboardMarkup()
+
+    for c in categories:
+        markup.add(
+            types.InlineKeyboardButton(
+                c[1],
+                callback_data=f"category_{c[0]}"
+            )
+        )
+
     bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, "Выбор плательщика сохранён ✅\nКатегории добавим следующим шагом.")
+    bot.send_message(chat_id, "Выберите категорию:", reply_markup=markup)
+
+# -------------------
+# Если категорий нет, создаём базовые
+# -------------------
+
+def ensure_default_categories(session_id):
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT COUNT(*) FROM categories WHERE session_id = %s",
+        (session_id,)
+    )
+    count = cur.fetchone()[0]
+
+    if count == 0:
+        defaults = ["Еда", "Транспорт", "Жильё", "Развлечения", "Другое"]
+        for cat in defaults:
+            cur.execute(
+                "INSERT INTO categories (session_id, name) VALUES (%s, %s)",
+                (session_id, cat)
+            )
+            
+# -------------------
+# Сохраняем выбранную категорию
+# -------------------
+    
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("category_"))
+def select_category(call):
+    chat_id = call.message.chat.id
+    category_id = int(call.data.split("_")[1])
+
+    user_state.setdefault(chat_id, {})
+    user_state[chat_id]["category_id"] = category_id
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Категория сохранена ✅\nТеперь выбираем участников.")
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # -------------------
 # WEBHOOK
