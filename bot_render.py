@@ -440,6 +440,10 @@ def ensure_default_categories(session_id):
                 "INSERT INTO categories (session_id, name) VALUES (%s, %s)",
                 (session_id, cat)
             )
+
+    conn.commit()
+    cur.close()
+    conn.close()
             
 # -------------------
 # Сохраняем выбранную категорию
@@ -456,10 +460,7 @@ def select_category(call):
     bot.answer_callback_query(call.id)
     bot.send_message(chat_id, "Категория сохранена ✅\nТеперь выбираем участников.")
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
+   
 # -------------------
 # WEBHOOK
 # -------------------
