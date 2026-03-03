@@ -421,7 +421,7 @@ def ensure_default_categories(session_id):
 # Сохраняем выбранную категорию
 # -------------------
     
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("category_"))
+@bot.callback_query_handler(func=lambda call: call.data.startswith("category_"))
 def select_category(call):
     chat_id = call.message.chat.id
     category_id = int(call.data.split("_")[1])
