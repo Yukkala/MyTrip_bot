@@ -1,3 +1,12 @@
+import os
+import telebot
+import psycopg2
+from flask import Flask, request
+
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+DATABASE_URL = os.environ.get("DATABASE_URL")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+
 # -------------------
 # БАЗА ДАННЫХ
 # -------------------
