@@ -456,9 +456,130 @@ def select_category(call):
 
     user_state.setdefault(chat_id, {})
     user_state[chat_id]["category_id"] = category_id
+    user_state[chat_id]["selected_participants"] = []
+
+    session_id = user_state[chat_id]["session_id"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id, name FROM participants WHERE session_id = %s",
+        (session_id,)
+    )
+    participants = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    markup = types.InlineKeyboardMarkup()
+
+    for p in participants:
+        markup.add(
+            types.InlineKeyboardButton(
+                f"⬜ {p[1]}",
+                callback_data=f"toggle_{p[0]}"
+            )
+        )
+
+    markup.add(types.InlineKeyboardButton("✅ Готово", callback_data="finish_expense"))
 
     bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, "Категория сохранена ✅\nТеперь выбираем участников.")
+    bot.send_message(chat_id, "Выберите участников:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_"))
+def toggle_participant(call):
+    chat_id = call.message.chat.id
+    participant_id = int(call.data.split("_")[1])
+
+    selected = user_state[chat_id].get("selected_participants", [])
+
+    if participant_id in selected:
+        selected.remove(participant_id)
+    else:
+        selected.append(participant_id)
+
+    user_state[chat_id]["selected_participants"] = selected
+
+    # Перерисовываем кнопки
+    session_id = user_state[chat_id]["session_id"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id, name FROM participants WHERE session_id = %s",
+        (session_id,)
+    )
+    participants = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    markup = types.InlineKeyboardMarkup()
+
+    for p in participants:
+        if p[0] in selected:
+            text = f"✅ {p[1]}"
+        else:
+            text = f"⬜ {p[1]}"
+
+        markup.add(
+            types.InlineKeyboardButton(
+                text,
+                callback_data=f"toggle_{p[0]}"
+            )
+        )
+
+    markup.add(types.InlineKeyboardButton("✅ Готово", callback_data="finish_expense"))
+
+    bot.edit_message_reply_markup(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        reply_markup=markup
+    )
+
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "finish_expense")
+def finish_expense(call):
+    chat_id = call.message.chat.id
+    data = user_state.get(chat_id, {})
+
+    selected = data.get("selected_participants", [])
+
+    if not selected:
+        bot.answer_callback_query(call.id)
+        bot.send_message(chat_id, "Выберите хотя бы одного участника.")
+        return
+
+    session_id = data["session_id"]
+    amount = data["expense_amount"]
+    payer_id = data["payer_id"]
+    category_id = data["category_id"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO expenses (session_id, payer, amount, category_id) VALUES (%s, %s, %s, %s) RETURNING id",
+        (session_id, payer_id, amount, category_id)
+    )
+
+    expense_id = cur.fetchone()[0]
+
+    for participant_id in selected:
+        cur.execute(
+            "INSERT INTO expense_shares (expense_id, participant_id) VALUES (%s, %s)",
+            (expense_id, participant_id)
+        )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Расход сохранён 💰✅")
 
    
 # -------------------
