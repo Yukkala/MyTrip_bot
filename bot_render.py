@@ -32,7 +32,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS sessions (
         id SERIAL PRIMARY KEY,
         chat_id BIGINT,
-        name TEXT
+        name TEXT,
         is_active BOOLEAN
     );
     """)
