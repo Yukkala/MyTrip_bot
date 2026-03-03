@@ -1,23 +1,8 @@
-import os
-import telebot
-import psycopg2
-from flask import Flask, request
-
-TOKEN = os.environ.get("TELEGRAM_TOKEN")
-DATABASE_URL = os.environ.get("DATABASE_URL")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
-
-if not TOKEN:
-    raise ValueError("Нет TELEGRAM_TOKEN")
-
-if not DATABASE_URL:
-    raise ValueError("Нет DATABASE_URL")
-
-bot = telebot.TeleBot(TOKEN)
-
 # -------------------
 # БАЗА ДАННЫХ
 # -------------------
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def get_db():
     return psycopg2.connect(DATABASE_URL)
@@ -43,12 +28,21 @@ def init_db():
     """)
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS categories (
+        id SERIAL PRIMARY KEY,
+        session_id INTEGER,
+        name TEXT
+    );
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS expenses (
         id SERIAL PRIMARY KEY,
         session_id INTEGER,
         payer TEXT,
         amount NUMERIC,
-        description TEXT
+        description TEXT,
+        category_id INTEGER
     );
     """)
 
