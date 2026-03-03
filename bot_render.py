@@ -456,9 +456,52 @@ def select_category(call):
 
     user_state.setdefault(chat_id, {})
     user_state[chat_id]["category_id"] = category_id
-    user_state[chat_id]["selected_participants"] = []
 
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("👥 Разделить на всех", callback_data="split_all"))
+    markup.add(types.InlineKeyboardButton("✏️ Разделить выборочно", callback_data="split_custom"))
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Как разделить расход?", reply_markup=markup)
+
+# -------------------
+# Если выбрали «Разделить на всех»
+# -------------------
+
+@bot.callback_query_handler(func=lambda call: call.data == "split_all")
+def split_all(call):
+    chat_id = call.message.chat.id
+    data = user_state.get(chat_id, {})
+    session_id = data.get("session_id")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id FROM participants WHERE session_id = %s",
+        (session_id,)
+    )
+    participants = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    selected_ids = [p[0] for p in participants]
+    user_state[chat_id]["selected_participants"] = selected_ids
+
+    bot.answer_callback_query(call.id)
+    save_expense_to_db(chat_id)
+
+# -------------------
+# Если выбрали «Разделить выборочно»
+# -------------------
+
+@bot.callback_query_handler(func=lambda call: call.data == "split_custom")
+def split_custom(call):
+    chat_id = call.message.chat.id
     session_id = user_state[chat_id]["session_id"]
+
+    user_state[chat_id]["selected_participants"] = []
 
     conn = get_db()
     cur = conn.cursor()
@@ -486,6 +529,45 @@ def select_category(call):
 
     bot.answer_callback_query(call.id)
     bot.send_message(chat_id, "Выберите участников:", reply_markup=markup)
+
+# -------------------
+# Вынесем сохранение в отдельную функцию
+# -------------------
+
+def save_expense_to_db(chat_id):
+    data = user_state.get(chat_id, {})
+    selected = data.get("selected_participants", [])
+
+    if not selected:
+        bot.send_message(chat_id, "Нет выбранных участников.")
+        return
+
+    session_id = data["session_id"]
+    amount = data["expense_amount"]
+    payer_id = data["payer_id"]
+    category_id = data["category_id"]
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO expenses (session_id, payer, amount, category_id) VALUES (%s, %s, %s, %s) RETURNING id",
+        (session_id, payer_id, amount, category_id)
+    )
+
+    expense_id = cur.fetchone()[0]
+
+    for participant_id in selected:
+        cur.execute(
+            "INSERT INTO expense_shares (expense_id, participant_id) VALUES (%s, %s)",
+            (expense_id, participant_id)
+        )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    bot.send_message(chat_id, "Расход сохранён 💰✅")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("toggle_"))
 def toggle_participant(call):
@@ -544,7 +626,8 @@ def toggle_participant(call):
 @bot.callback_query_handler(func=lambda call: call.data == "finish_expense")
 def finish_expense(call):
     chat_id = call.message.chat.id
-    data = user_state.get(chat_id, {})
+    bot.answer_callback_query(call.id)
+    save_expense_to_db(chat_id)
 
     selected = data.get("selected_participants", [])
 
