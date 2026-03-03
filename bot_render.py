@@ -201,6 +201,89 @@ def back_to_menu(message):
     bot.send_message(message.chat.id, "Главное меню:", reply_markup=main_menu())
 
 # -------------------
+# Кнопка "Участники"
+# -------------------
+
+@bot.message_handler(func=lambda m: m.text == "👥 Участники")
+def participants_menu(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("➕ Добавить участника")
+    markup.add("📋 Список участников")
+    markup.add("⬅ Назад")
+
+    bot.send_message(message.chat.id, "Управление участниками:", reply_markup=markup)
+
+# -------------------
+# Добавить участника
+# -------------------
+
+@bot.message_handler(func=lambda m: m.text == "➕ Добавить участника")
+def add_participant(message):
+    msg = bot.send_message(message.chat.id, "Введите имя участника:")
+    bot.register_next_step_handler(msg, save_participant)
+
+
+def save_participant(message):
+    name = message.text
+    chat_id = message.chat.id
+
+    session_id = user_state.get(chat_id, {}).get("session_id")
+
+    if not session_id:
+        bot.send_message(chat_id, "Сначала открой встречу.")
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "INSERT INTO participants (session_id, name) VALUES (%s, %s)",
+        (session_id, name)
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    bot.send_message(chat_id, f"Участник {name} добавлен ✅")
+    
+# -------------------
+# Список участников
+# -------------------
+
+@bot.message_handler(func=lambda m: m.text == "📋 Список участников")
+def list_participants(message):
+    chat_id = message.chat.id
+    session_id = user_state.get(chat_id, {}).get("session_id")
+
+    if not session_id:
+        bot.send_message(chat_id, "Сначала открой встречу.")
+        return
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT name FROM participants WHERE session_id = %s",
+        (session_id,)
+    )
+
+    participants = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    if not participants:
+        bot.send_message(chat_id, "Участников пока нет.")
+        return
+
+    text = "Участники:\n\n"
+    for p in participants:
+        text += f"• {p[0]}\n"
+
+    bot.send_message(chat_id, text)
+    
+# -------------------
 # WEBHOOK
 # -------------------
 
