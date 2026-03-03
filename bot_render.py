@@ -27,7 +27,7 @@ def get_db():
 def init_db():
     conn = get_db()
     cur = conn.cursor()
-
+    
     cur.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
         id SERIAL PRIMARY KEY,
@@ -45,6 +45,11 @@ def init_db():
     );
     """)
 
+    cur.execute("""
+    ALTER TABLE categories
+    ADD COLUMN IF NOT EXISTS session_id INTEGER;
+    """)
+    
     cur.execute("""
     CREATE TABLE IF NOT EXISTS categories (
         id SERIAL PRIMARY KEY,
