@@ -120,23 +120,34 @@ def create_session(message):
 
 
 def save_session(message):
-    name = message.text
-    chat_id = message.chat.id
+    try:
+        name = message.text
+        chat_id = message.chat.id
 
-    conn = get_db()
-    cur = conn.cursor()
+        print("СОЗДАЮ ВСТРЕЧУ:", name)
 
-    cur.execute(
-        "INSERT INTO sessions (chat_id, name, is_active) VALUES (%s, %s, %s)",
-        (chat_id, name, True)
-    )
+        conn = get_db()
+        cur = conn.cursor()
 
-    conn.commit()
-    cur.close()
-    conn.close()
+        cur.execute(
+            "INSERT INTO sessions (chat_id, name, is_active) VALUES (%s, %s, %s)",
+            (chat_id, name, True)
+        )
 
-    bot.send_message(message.chat.id, f"Встреча '{name}' создана 🎉", reply_markup=main_menu())
+        conn.commit()
+        cur.close()
+        conn.close()
 
+        bot.send_message(
+            chat_id,
+            f"Встреча '{name}' создана 🎉",
+            reply_markup=main_menu()
+        )
+
+    except Exception as e:
+        print("ОШИБКА:", e)
+        bot.send_message(message.chat.id, f"Ошибка: {e}")
+        
 # -------------------
 # Список встреч
 # -------------------
