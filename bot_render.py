@@ -360,40 +360,59 @@ def save_expense_amount(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("payer_"))
 def select_payer(call):
-    chat_id = call.message.chat.id
-    payer_id = int(call.data.split("_")[1])
+    try:
+        chat_id = call.message.chat.id
+        payer_id = int(call.data.split("_")[1])
 
-    user_state.setdefault(chat_id, {})
-    user_state[chat_id]["payer_id"] = payer_id
+        print("PAYER CLICKED:", payer_id)
 
-    session_id = user_state[chat_id]["session_id"]
+        user_state.setdefault(chat_id, {})
+        user_state[chat_id]["payer_id"] = payer_id
 
-    ensure_default_categories(session_id)
+        session_id = user_state.get(chat_id, {}).get("session_id")
 
-    conn = get_db()
-    cur = conn.cursor()
+        print("SESSION_ID:", session_id)
 
-    cur.execute(
-        "SELECT id, name FROM categories WHERE session_id = %s",
-        (session_id,)
-    )
-    categories = cur.fetchall()
+        if not session_id:
+            bot.send_message(chat_id, "Ошибка: встреча не выбрана.")
+            return
 
-    cur.close()
-    conn.close()
+        ensure_default_categories(session_id)
 
-    markup = types.InlineKeyboardMarkup()
+        conn = get_db()
+        cur = conn.cursor()
 
-    for c in categories:
-        markup.add(
-            types.InlineKeyboardButton(
-                c[1],
-                callback_data=f"category_{c[0]}"
-            )
+        cur.execute(
+            "SELECT id, name FROM categories WHERE session_id = %s",
+            (session_id,)
         )
+        categories = cur.fetchall()
 
-    bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, "Выберите категорию:", reply_markup=markup)
+        print("CATEGORIES:", categories)
+
+        cur.close()
+        conn.close()
+
+        if not categories:
+            bot.send_message(chat_id, "Категории не найдены.")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+
+        for c in categories:
+            markup.add(
+                types.InlineKeyboardButton(
+                    c[1],
+                    callback_data=f"category_{c[0]}"
+                )
+            )
+
+        bot.answer_callback_query(call.id)
+        bot.send_message(chat_id, "Выберите категорию:", reply_markup=markup)
+
+    except Exception as e:
+        print("ERROR IN select_payer:", e)
+        bot.send_message(call.message.chat.id, f"Ошибка: {e}")
 
 # -------------------
 # Если категорий нет, создаём базовые
