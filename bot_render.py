@@ -207,11 +207,6 @@ def open_session(call):
     markup.add("📊 Баланс")
     markup.add("⬅ Назад")
 
-# -------------------
-# добавим кнопку "Баланс встречи"
-# -------------------
-    markup.add(types.InlineKeyboardButton("📊 Баланс встречи", callback_data="show_balance"))
-
     bot.send_message(
         call.message.chat.id,
         "Выбери действие:",
@@ -634,34 +629,7 @@ def finish_expense(call):
     bot.answer_callback_query(call.id)
     save_expense_to_db(chat_id)
 
-    selected = data.get("selected_participants", [])
-
-    if not selected:
-        bot.answer_callback_query(call.id)
-        bot.send_message(chat_id, "Выберите хотя бы одного участника.")
-        return
-
-    session_id = data["session_id"]
-    amount = data["expense_amount"]
-    payer_id = data["payer_id"]
-    category_id = data["category_id"]
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute(
-        "INSERT INTO expenses (session_id, payer, amount, category_id) VALUES (%s, %s, %s, %s) RETURNING id",
-        (session_id, payer_id, amount, category_id)
-    )
-
-    expense_id = cur.fetchone()[0]
-
-    for participant_id in selected:
-        cur.execute(
-            "INSERT INTO expense_shares (expense_id, participant_id) VALUES (%s, %s)",
-            (expense_id, participant_id)
-        )
-
+    
     conn.commit()
     cur.close()
     conn.close()
@@ -672,20 +640,18 @@ def finish_expense(call):
 # -------------------
 # добавляем обработчик баланса
 # -------------------
-@bot.callback_query_handler(func=lambda call: call.data == "show_balance")
-def show_balance(call):
-    chat_id = call.message.chat.id
+@bot.message_handler(func=lambda m: m.text == "📊 Баланс")
+def show_balance(message):
+    chat_id = message.chat.id
     session_id = user_state.get(chat_id, {}).get("session_id")
 
     if not session_id:
-        bot.answer_callback_query(call.id)
-        bot.send_message(chat_id, "Сессия не найдена.")
+        bot.send_message(chat_id, "Сначала открой встречу.")
         return
 
     conn = get_db()
     cur = conn.cursor()
 
-    # Получаем всех участников
     cur.execute(
         "SELECT id, name FROM participants WHERE session_id = %s",
         (session_id,)
@@ -694,7 +660,6 @@ def show_balance(call):
 
     balances = {p[0]: {"name": p[1], "balance": 0} for p in participants}
 
-    # Получаем все расходы
     cur.execute(
         "SELECT id, payer, amount FROM expenses WHERE session_id = %s",
         (session_id,)
@@ -713,14 +678,51 @@ def show_balance(call):
         if not shared:
             continue
 
-        share_amount = amount / len(shared)
+        share_amount = float(amount) / len(shared)
 
-        # Плательщик получает всю сумму
-        balances[payer_id]["balance"] += amount
+        balances[payer_id]["balance"] += float(amount)
 
-        # Каждый участник должен свою долю
         for s in shared:
             balances[s[0]]["balance"] -= share_amount
+
+    cur.close()
+    conn.close()
+
+    debtors = []
+    creditors = []
+
+    for p_id, data in balances.items():
+        bal = round(data["balance"], 2)
+        if bal < 0:
+            debtors.append({"name": data["name"], "amount": abs(bal)})
+        elif bal > 0:
+            creditors.append({"name": data["name"], "amount": bal})
+
+    result = []
+
+    i = 0
+    j = 0
+
+    while i < len(debtors) and j < len(creditors):
+        d = debtors[i]
+        c = creditors[j]
+
+        pay = min(d["amount"], c["amount"])
+
+        result.append(f"{d['name']} должен(а) {c['name']} {round(pay,2)} ₽")
+
+        d["amount"] -= pay
+        c["amount"] -= pay
+
+        if d["amount"] <= 0.01:
+            i += 1
+        if c["amount"] <= 0.01:
+            j += 1
+
+    if not result:
+        bot.send_message(chat_id, "Все расчёты закрыты ✅")
+    else:
+        bot.send_message(chat_id, "\n".join(result))
 
     cur.close()
     conn.close()
