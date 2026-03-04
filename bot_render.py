@@ -501,6 +501,7 @@ def split_all(call):
 # Если выбрали «Разделить выборочно»
 # -------------------
 
+# === БЛОК SPLIT_CUSTOM ===
 @bot.callback_query_handler(func=lambda call: call.data == "split_custom")
 def split_custom(call):
     chat_id = call.message.chat.id
@@ -520,6 +521,22 @@ def split_custom(call):
     cur.close()
     conn.close()
 
+    markup = types.InlineKeyboardMarkup()
+
+    for p in participants:
+        markup.add(
+            types.InlineKeyboardButton(
+                f"⬜ {p[1]}",
+                callback_data=f"toggle_{p[0]}"
+            )
+        )
+
+    markup.add(types.InlineKeyboardButton("✅ Готово", callback_data="finish_expense"))
+
+    bot.answer_callback_query(call.id)
+    bot.send_message(chat_id, "Выберите участников:", reply_markup=markup)
+
+# === БЛОК FINISH_EXPENSE ===
 @bot.callback_query_handler(func=lambda call: call.data == "finish_expense")
 def finish_expense(call):
     chat_id = call.message.chat.id
@@ -545,6 +562,7 @@ def finish_expense(call):
 # Вынесем сохранение в отдельную функцию
 # -------------------
 
+# === БЛОК SAVE_EXPENSE ===
 def save_expense_to_db(chat_id):
     data = user_state.get(chat_id)
 
@@ -566,7 +584,7 @@ def save_expense_to_db(chat_id):
         return
 
     session_id = data["session_id"]
-    amount = data["expense_amount"]
+    amount = float(data["expense_amount"])
     payer_id = data["payer_id"]
     category_id = data["category_id"]
 
@@ -574,38 +592,32 @@ def save_expense_to_db(chat_id):
         conn = get_db()
         cur = conn.cursor()
 
-        cur.execute(
-            """
+        cur.execute("""
             INSERT INTO expenses (session_id, payer, amount, category_id)
             VALUES (%s, %s, %s, %s)
             RETURNING id
-            """,
-            (session_id, payer_id, amount, category_id)
-        )
+        """, (session_id, payer_id, amount, category_id))
 
         expense_id = cur.fetchone()[0]
 
+        share_amount = amount / len(selected)
+
         for participant_id in selected:
-            cur.execute(
-                """
+            cur.execute("""
                 INSERT INTO expense_shares (expense_id, participant_id)
                 VALUES (%s, %s)
-                """,
-                (expense_id, participant_id)
-            )
+            """, (expense_id, participant_id))
 
         conn.commit()
         cur.close()
         conn.close()
 
-        # очищаем состояние после сохранения
         user_state[chat_id] = {"session_id": session_id}
 
         bot.send_message(chat_id, "Расход сохранён 💰✅")
 
     except Exception as e:
         bot.send_message(chat_id, f"Ошибка при сохранении: {e}")
-
 
 # -------------------
 # добавляем обработчик баланса
