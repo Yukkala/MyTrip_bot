@@ -62,7 +62,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS expenses (
         id SERIAL PRIMARY KEY,
         session_id INTEGER,
-        payer TEXT,
+        payer INTEGER,
         amount NUMERIC,
         description TEXT,
         category_id INTEGER
