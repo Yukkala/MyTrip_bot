@@ -70,6 +70,11 @@ def init_db():
     """)
 
     cur.execute("""
+    ALTER TABLE expenses
+    ADD COLUMN IF NOT EXISTS category_id INTEGER;
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS expense_shares (
         id SERIAL PRIMARY KEY,
         expense_id INTEGER,
