@@ -629,13 +629,6 @@ def finish_expense(call):
     bot.answer_callback_query(call.id)
     save_expense_to_db(chat_id)
 
-    
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, "Расход сохранён 💰✅")
 
 # -------------------
 # добавляем обработчик баланса
@@ -652,22 +645,31 @@ def show_balance(message):
     conn = get_db()
     cur = conn.cursor()
 
+    # Получаем участников
     cur.execute(
         "SELECT id, name FROM participants WHERE session_id = %s",
         (session_id,)
     )
     participants = cur.fetchall()
 
-    balances = {p[0]: {"name": p[1], "balance": 0} for p in participants}
+    if not participants:
+        bot.send_message(chat_id, "Нет участников.")
+        return
 
+    balances = {p[0]: {"name": p[1], "balance": 0.0} for p in participants}
+
+    # Получаем расходы
     cur.execute(
         "SELECT id, payer, amount FROM expenses WHERE session_id = %s",
         (session_id,)
     )
     expenses = cur.fetchall()
 
-    for expense in expenses:
-        expense_id, payer_id, amount = expense
+    if not expenses:
+        bot.send_message(chat_id, "Расходов пока нет.")
+        return
+
+    for expense_id, payer_id, amount in expenses:
 
         cur.execute(
             "SELECT participant_id FROM expense_shares WHERE expense_id = %s",
@@ -680,23 +682,29 @@ def show_balance(message):
 
         share_amount = float(amount) / len(shared)
 
-        balances[payer_id]["balance"] += float(amount)
+        # Плательщик получает всю сумму
+        if payer_id in balances:
+            balances[payer_id]["balance"] += float(amount)
 
+        # Каждый участник платит долю
         for s in shared:
-            balances[s[0]]["balance"] -= share_amount
+            participant_id = s[0]
+            if participant_id in balances:
+                balances[participant_id]["balance"] -= share_amount
 
     cur.close()
     conn.close()
 
+    # Формируем списки
     debtors = []
     creditors = []
 
-    for p_id, data in balances.items():
-        bal = round(data["balance"], 2)
-        if bal < 0:
-            debtors.append({"name": data["name"], "amount": abs(bal)})
-        elif bal > 0:
-            creditors.append({"name": data["name"], "amount": bal})
+    for p in balances.values():
+        bal = round(p["balance"], 2)
+        if bal < -0.01:
+            debtors.append({"name": p["name"], "amount": abs(bal)})
+        elif bal > 0.01:
+            creditors.append({"name": p["name"], "amount": bal})
 
     result = []
 
@@ -718,49 +726,6 @@ def show_balance(message):
             i += 1
         if c["amount"] <= 0.01:
             j += 1
-
-    if not result:
-        bot.send_message(chat_id, "Все расчёты закрыты ✅")
-    else:
-        bot.send_message(chat_id, "\n".join(result))
-
-    cur.close()
-    conn.close()
-
-    # Разделяем на должников и кредиторов
-    debtors = []
-    creditors = []
-
-    for p_id, data in balances.items():
-        bal = round(data["balance"], 2)
-        if bal < 0:
-            debtors.append({"name": data["name"], "amount": abs(bal)})
-        elif bal > 0:
-            creditors.append({"name": data["name"], "amount": bal})
-
-    # Сводим долги
-    result = []
-
-    i = 0
-    j = 0
-
-    while i < len(debtors) and j < len(creditors):
-        d = debtors[i]
-        c = creditors[j]
-
-        pay = min(d["amount"], c["amount"])
-
-        result.append(f"{d['name']} должен(а) {c['name']} {round(pay,2)} ₽")
-
-        d["amount"] -= pay
-        c["amount"] -= pay
-
-        if d["amount"] == 0:
-            i += 1
-        if c["amount"] == 0:
-            j += 1
-
-    bot.answer_callback_query(call.id)
 
     if not result:
         bot.send_message(chat_id, "Все расчёты закрыты ✅")
