@@ -710,19 +710,39 @@ def webhook():
 def index():
     return "bot running"
 
+@app.route("/setup")
+def setup():
+    """Вызовите один раз после деплоя: https://your-app.onrender.com/setup"""
+    try:
+        init_db()
+        if WEBHOOK_HOST:
+            webhook_url = f"{WEBHOOK_HOST}/{TOKEN}"
+            bot.remove_webhook()
+            result = bot.set_webhook(url=webhook_url)
+            msg = f"Webhook set: {webhook_url} | result={result}"
+        else:
+            msg = "RENDER_EXTERNAL_URL not set"
+        log.info(f"setup: {msg}")
+        return msg, 200
+    except Exception as e:
+        log.error(f"setup error: {e}")
+        return f"Error: {e}", 500
+
+@app.route("/status")
+def status():
+    """Проверить текущий вебхук."""
+    info = bot.get_webhook_info()
+    return {
+        "url": info.url,
+        "pending_update_count": info.pending_update_count,
+        "last_error_message": info.last_error_message,
+    }, 200
+
 # ============================================================
 # START
 # ============================================================
 
-# Выполняется при импорте модуля — работает и с gunicorn, и с python напрямую
 init_db()
-if WEBHOOK_HOST:
-    webhook_url = f"{WEBHOOK_HOST}/{TOKEN}"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    log.info(f"Webhook set: {webhook_url}")
-else:
-    log.warning("RENDER_EXTERNAL_URL not set — webhook not configured")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
