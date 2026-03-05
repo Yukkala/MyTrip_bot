@@ -7,6 +7,9 @@
 import os
 import json
 import logging
+import threading
+import time
+import requests as http_requests
 from collections import defaultdict
 from flask import Flask, request
 import telebot
@@ -741,6 +744,22 @@ def status():
 # ============================================================
 # START
 # ============================================================
+
+def self_ping():
+    """Пингует сервис каждые 10 минут чтобы Render не усыплял его."""
+    if not WEBHOOK_HOST:
+        return
+    while True:
+        time.sleep(600)  # 10 минут
+        try:
+            http_requests.get(f"{WEBHOOK_HOST}/", timeout=10)
+            log.info("self_ping: ok")
+        except Exception as e:
+            log.warning(f"self_ping: failed: {e}")
+
+# Запускаем self-ping в фоне
+ping_thread = threading.Thread(target=self_ping, daemon=True)
+ping_thread.start()
 
 init_db()
 
