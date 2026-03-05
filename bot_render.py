@@ -64,6 +64,8 @@ def init_db():
     log.info("init_db: start")
     conn = get_conn()
     cur = conn.cursor()
+
+    # events — основная таблица, не трогаем если уже есть
     cur.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id SERIAL PRIMARY KEY,
@@ -72,6 +74,19 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+
+    # participants — пересоздаём если нет event_id (старая схема)
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name='participants' AND column_name='event_id'
+    """)
+    has_event_id = cur.fetchone()
+    if not has_event_id:
+        log.info("init_db: participants missing event_id — recreating")
+        cur.execute("DROP TABLE IF EXISTS expense_shares CASCADE")
+        cur.execute("DROP TABLE IF EXISTS expenses CASCADE")
+        cur.execute("DROP TABLE IF EXISTS participants CASCADE")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS participants (
             id SERIAL PRIMARY KEY,
@@ -110,6 +125,7 @@ def init_db():
             data JSONB
         )
     """)
+
     conn.commit()
     cur.close()
     conn.close()
