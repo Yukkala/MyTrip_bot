@@ -1,17 +1,12 @@
-# BOT TRAT — VERSION 8.0
+# BOT TRAT — VERSION 8.1 DEBUG
 """
-Ключевое изменение архитектуры:
-- Один универсальный обработчик текстовых сообщений (dispatch)
-- get_state() вызывается ОДИН РАЗ на сообщение, а не в каждой lambda
-- Это устраняет зависание после ввода участников
+Версия с подробным логированием для диагностики.
+Смотрите логи в Render Dashboard → ваш сервис → Logs.
 """
-
-# ============================================================
-# 1. IMPORTS
-# ============================================================
 
 import os
 import json
+import logging
 from collections import defaultdict
 from flask import Flask, request
 import telebot
@@ -23,7 +18,17 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # ============================================================
-# 2. CONFIGURATION
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger(__name__)
+
+# ============================================================
+# CONFIGURATION
 # ============================================================
 
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -42,20 +47,17 @@ bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 # ============================================================
-# 3. DB CONNECTION
+# DB
 # ============================================================
 
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
-# ============================================================
-# 4. INIT DB
-# ============================================================
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return conn
 
 def init_db():
+    log.info("init_db: start")
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id SERIAL PRIMARY KEY,
@@ -102,13 +104,13 @@ def init_db():
             data JSONB
         )
     """)
-
     conn.commit()
     cur.close()
     conn.close()
+    log.info("init_db: done")
 
 # ============================================================
-# 5. STATE HELPERS
+# STATE
 # ============================================================
 
 def get_state(chat_id):
@@ -119,10 +121,14 @@ def get_state(chat_id):
     cur.close()
     conn.close()
     if row:
-        return {"step": row["step"], **(row["data"] or {})}
+        result = {"step": row["step"], **(row["data"] or {})}
+        log.info(f"get_state({chat_id}): {result}")
+        return result
+    log.info(f"get_state({chat_id}): empty")
     return {}
 
 def set_state(chat_id, step, data=None):
+    log.info(f"set_state({chat_id}): step={step} data={data}")
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -134,6 +140,7 @@ def set_state(chat_id, step, data=None):
     conn.close()
 
 def clear_state(chat_id):
+    log.info(f"clear_state({chat_id})")
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("DELETE FROM user_state WHERE chat_id=%s", (chat_id,))
@@ -142,7 +149,7 @@ def clear_state(chat_id):
     conn.close()
 
 # ============================================================
-# 6. ACTIVE EVENT HELPERS
+# ACTIVE EVENT
 # ============================================================
 
 def get_active_event(chat_id):
@@ -156,9 +163,11 @@ def get_active_event(chat_id):
     row = cur.fetchone()
     cur.close()
     conn.close()
+    log.info(f"get_active_event({chat_id}): {dict(row) if row else None}")
     return row
 
 def set_active_event(chat_id, event_id):
+    log.info(f"set_active_event({chat_id}): event_id={event_id}")
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -170,7 +179,7 @@ def set_active_event(chat_id, event_id):
     conn.close()
 
 # ============================================================
-# 7. MENUS
+# MENU
 # ============================================================
 
 def main_menu():
@@ -181,31 +190,31 @@ def main_menu():
     return markup
 
 # ============================================================
-# 8. /start
+# /start
 # ============================================================
 
 @bot.message_handler(commands=['start'])
 def cmd_start(msg):
+    log.info(f"cmd_start: chat_id={msg.chat.id}")
     clear_state(msg.chat.id)
     bot.send_message(
         msg.chat.id,
-        "👋 Привет! Я помогу учитывать расходы на встречах.\n\n"
-        "Начните с кнопки *➕ Новая встреча*.",
+        "👋 Привет! Начните с кнопки *➕ Новая встреча*.",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
 
 # ============================================================
-# 9. ЕДИНЫЙ ДИСПЕТЧЕР ТЕКСТОВЫХ СООБЩЕНИЙ
-# get_state вызывается один раз — нет лишних запросов к БД
+# ЕДИНЫЙ ДИСПЕТЧЕР
 # ============================================================
 
 @bot.message_handler(func=lambda m: True)
 def dispatch(msg):
     chat_id = msg.chat.id
     text = msg.text or ""
+    log.info(f"dispatch: chat_id={chat_id} text={repr(text)}")
 
-    # --- Кнопки главного меню имеют приоритет ---
+    # Кнопки меню — приоритет
     if text == "➕ Новая встреча":
         return handle_new_event(msg)
     if text == "📅 Мои встречи":
@@ -219,9 +228,10 @@ def dispatch(msg):
     if text == "📊 Итоги":
         return handle_balance(msg)
 
-    # --- Один запрос к БД для определения шага ---
+    # Один запрос к БД
     state = get_state(chat_id)
     step = state.get("step")
+    log.info(f"dispatch: step={step}")
 
     if step == "event_title":
         return handle_event_title(msg, state)
@@ -230,22 +240,23 @@ def dispatch(msg):
     if step == "expense_amount":
         return handle_expense_amount(msg, state)
 
-    # Непонятное сообщение
     bot.send_message(chat_id, "Используйте кнопки меню.", reply_markup=main_menu())
 
 # ============================================================
-# 10. НОВАЯ ВСТРЕЧА
+# НОВАЯ ВСТРЕЧА
 # ============================================================
 
 def handle_new_event(msg):
+    log.info(f"handle_new_event: chat_id={msg.chat.id}")
     clear_state(msg.chat.id)
     set_state(msg.chat.id, "event_title")
     bot.send_message(msg.chat.id, "Введите название встречи:")
 
 def handle_event_title(msg, state):
     title = msg.text.strip()
+    log.info(f"handle_event_title: chat_id={msg.chat.id} title={repr(title)}")
     if not title:
-        bot.send_message(msg.chat.id, "Название не может быть пустым. Введите ещё раз:")
+        bot.send_message(msg.chat.id, "Название не может быть пустым:")
         return
 
     conn = get_conn()
@@ -258,6 +269,7 @@ def handle_event_title(msg, state):
     conn.commit()
     cur.close()
     conn.close()
+    log.info(f"handle_event_title: created event_id={event_id}")
 
     set_active_event(msg.chat.id, event_id)
     set_state(msg.chat.id, "add_participants", {"event_id": event_id})
@@ -271,17 +283,21 @@ def handle_event_title(msg, state):
     )
 
 # ============================================================
-# 11. ДОБАВЛЕНИЕ УЧАСТНИКОВ
+# УЧАСТНИКИ
 # ============================================================
 
 def handle_save_participants(msg, state):
+    log.info(f"handle_save_participants: chat_id={msg.chat.id} text={repr(msg.text)} state={state}")
     names = [x.strip() for x in msg.text.split(",") if x.strip()]
     if not names:
         bot.send_message(msg.chat.id, "Введите хотя бы одно имя через запятую:")
         return
 
     event_id = state.get("event_id")
+    log.info(f"handle_save_participants: event_id={event_id} names={names}")
+
     if not event_id:
+        log.error(f"handle_save_participants: event_id is None! state={state}")
         bot.send_message(msg.chat.id, "Ошибка: встреча не найдена. Создайте новую.")
         clear_state(msg.chat.id)
         return
@@ -293,6 +309,7 @@ def handle_save_participants(msg, state):
             "INSERT INTO participants(event_id, name) VALUES(%s, %s)",
             (event_id, name)
         )
+        log.info(f"handle_save_participants: inserted {name} into event {event_id}")
     conn.commit()
     cur.close()
     conn.close()
@@ -305,8 +322,25 @@ def handle_save_participants(msg, state):
         reply_markup=main_menu()
     )
 
+def handle_show_participants(msg):
+    ev = get_active_event(msg.chat.id)
+    if not ev:
+        bot.send_message(msg.chat.id, "Сначала выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM participants WHERE event_id=%s ORDER BY id", (ev["id"],))
+    people = cur.fetchall()
+    cur.close()
+    conn.close()
+    if not people:
+        bot.send_message(msg.chat.id, f"В встрече *{ev['title']}* нет участников.", parse_mode="Markdown")
+        return
+    names = "\n".join(f"• {p['name']}" for p in people)
+    bot.send_message(msg.chat.id, f"👥 *{ev['title']}*\n\n{names}", parse_mode="Markdown")
+
 # ============================================================
-# 12. МОИ ВСТРЕЧИ
+# МОИ ВСТРЕЧИ
 # ============================================================
 
 def handle_my_events(msg):
@@ -319,97 +353,57 @@ def handle_my_events(msg):
     events = cur.fetchall()
     cur.close()
     conn.close()
-
     if not events:
-        bot.send_message(
-            msg.chat.id,
-            "У вас нет встреч. Нажмите *➕ Новая встреча*.",
-            parse_mode="Markdown"
-        )
+        bot.send_message(msg.chat.id, "Нет встреч. Нажмите *➕ Новая встреча*.", parse_mode="Markdown")
         return
-
     active = get_active_event(msg.chat.id)
     markup = InlineKeyboardMarkup()
     for ev in events:
-        is_active = active and active["id"] == ev["id"]
-        label = f"{'✅ ' if is_active else ''}{ev['title']}"
+        label = f"{'✅ ' if active and active['id'] == ev['id'] else ''}{ev['title']}"
         markup.add(InlineKeyboardButton(label, callback_data=f"sev_{ev['id']}"))
-
     bot.send_message(msg.chat.id, "Выберите активную встречу:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("sev_"))
 def cb_switch_event(call):
     event_id = int(call.data.split("_")[1])
+    log.info(f"cb_switch_event: chat_id={call.message.chat.id} event_id={event_id}")
     set_active_event(call.message.chat.id, event_id)
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT title FROM events WHERE id=%s", (event_id,))
     ev = cur.fetchone()
     cur.close()
     conn.close()
-
     bot.edit_message_text(
         f"✅ Активная встреча: *{ev['title']}*",
-        call.message.chat.id,
-        call.message.message_id,
+        call.message.chat.id, call.message.message_id,
         parse_mode="Markdown"
     )
 
 # ============================================================
-# 13. УЧАСТНИКИ ТЕКУЩЕЙ ВСТРЕЧИ
-# ============================================================
-
-def handle_show_participants(msg):
-    ev = get_active_event(msg.chat.id)
-    if not ev:
-        bot.send_message(msg.chat.id, "Сначала создайте или выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
-        return
-
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT name FROM participants WHERE event_id=%s ORDER BY id", (ev["id"],))
-    people = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    if not people:
-        bot.send_message(msg.chat.id, f"В встрече *{ev['title']}* нет участников.", parse_mode="Markdown")
-        return
-
-    names = "\n".join(f"• {p['name']}" for p in people)
-    bot.send_message(msg.chat.id, f"👥 *{ev['title']}*\n\n{names}", parse_mode="Markdown")
-
-# ============================================================
-# 14. ДОБАВИТЬ РАСХОД — СУММА
+# РАСХОД
 # ============================================================
 
 def handle_add_expense_start(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
-        bot.send_message(msg.chat.id, "Сначала создайте или выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
+        bot.send_message(msg.chat.id, "Сначала выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
         return
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id FROM participants WHERE event_id=%s", (ev["id"],))
     people = cur.fetchall()
     cur.close()
     conn.close()
-
     if not people:
-        bot.send_message(msg.chat.id, "Сначала добавьте участников через кнопку 👥 Участники.")
+        bot.send_message(msg.chat.id, "Сначала добавьте участников через 👥 Участники.")
         return
-
     clear_state(msg.chat.id)
     set_state(msg.chat.id, "expense_amount", {"event_id": ev["id"]})
-    bot.send_message(
-        msg.chat.id,
-        f"📅 *{ev['title']}*\n\nВведите сумму расхода:",
-        parse_mode="Markdown"
-    )
+    bot.send_message(msg.chat.id, f"📅 *{ev['title']}*\n\nВведите сумму расхода:", parse_mode="Markdown")
 
 def handle_expense_amount(msg, state):
+    log.info(f"handle_expense_amount: chat_id={msg.chat.id} text={repr(msg.text)}")
     try:
         amount = float(msg.text.replace(",", "."))
         if amount <= 0:
@@ -417,160 +411,103 @@ def handle_expense_amount(msg, state):
     except ValueError:
         bot.send_message(msg.chat.id, "Введите положительное число, например: 1500 или 350.50")
         return
-
     event_id = state["event_id"]
     set_state(msg.chat.id, "expense_payer", {"event_id": event_id, "amount": amount})
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id, name FROM participants WHERE event_id=%s ORDER BY id", (event_id,))
     people = cur.fetchall()
     cur.close()
     conn.close()
-
     markup = InlineKeyboardMarkup()
     for p in people:
         markup.add(InlineKeyboardButton(p["name"], callback_data=f"ep_{p['id']}"))
-
-    bot.send_message(
-        msg.chat.id,
-        f"Сумма: *{amount} руб.*\n\nКто оплатил?",
-        parse_mode="Markdown",
-        reply_markup=markup
-    )
-
-# ============================================================
-# 15. КТО ПЛАТИЛ → КАТЕГОРИЯ
-# ============================================================
+    bot.send_message(msg.chat.id, f"Сумма: *{amount} руб.*\n\nКто оплатил?", parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ep_"))
 def cb_expense_payer(call):
     payer_id = int(call.data.split("_")[1])
+    log.info(f"cb_expense_payer: chat_id={call.message.chat.id} payer_id={payer_id}")
     state = get_state(call.message.chat.id)
-
     set_state(call.message.chat.id, "expense_category", {
         "event_id": state["event_id"],
         "amount": state["amount"],
         "payer_id": payer_id
     })
-
     markup = InlineKeyboardMarkup()
     for emoji, name in CATEGORIES:
         markup.add(InlineKeyboardButton(f"{emoji} {name}", callback_data=f"ec_{name}"))
-
-    bot.edit_message_text(
-        "Выберите категорию расхода:",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-
-# ============================================================
-# 16. КАТЕГОРИЯ → СПОСОБ РАЗДЕЛЕНИЯ
-# ============================================================
+    bot.edit_message_text("Выберите категорию:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ec_"))
 def cb_expense_category(call):
     category = call.data[3:]
+    log.info(f"cb_expense_category: chat_id={call.message.chat.id} category={category}")
     state = get_state(call.message.chat.id)
-
     set_state(call.message.chat.id, "expense_split", {
         "event_id": state["event_id"],
         "amount": state["amount"],
         "payer_id": state["payer_id"],
         "category": category
     })
-
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("👥 Поровну на всех",     callback_data="split_all"))
-    markup.add(InlineKeyboardButton("✅ Выбрать участников",  callback_data="split_pick"))
-
-    bot.edit_message_text(
-        "Как разделить расход?",
-        call.message.chat.id,
-        call.message.message_id,
-        reply_markup=markup
-    )
-
-# ============================================================
-# 17. ПОРОВНУ НА ВСЕХ
-# ============================================================
+    markup.add(InlineKeyboardButton("👥 Поровну на всех",    callback_data="split_all"))
+    markup.add(InlineKeyboardButton("✅ Выбрать участников", callback_data="split_pick"))
+    bot.edit_message_text("Как разделить расход?", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data == "split_all")
 def cb_split_all(call):
+    log.info(f"cb_split_all: chat_id={call.message.chat.id}")
     state = get_state(call.message.chat.id)
     event_id = state["event_id"]
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id FROM participants WHERE event_id=%s", (event_id,))
     people = [row["id"] for row in cur.fetchall()]
     share = state["amount"] / len(people)
-
     cur.execute(
-        "INSERT INTO expenses(event_id, amount, payer_id, category, split_type) "
-        "VALUES(%s,%s,%s,%s,'all') RETURNING id",
+        "INSERT INTO expenses(event_id,amount,payer_id,category,split_type) VALUES(%s,%s,%s,%s,'all') RETURNING id",
         (event_id, state["amount"], state["payer_id"], state["category"])
     )
     expense_id = cur.fetchone()["id"]
     for pid in people:
         cur.execute(
-            "INSERT INTO expense_shares(expense_id, participant_id, share) VALUES(%s,%s,%s)",
+            "INSERT INTO expense_shares(expense_id,participant_id,share) VALUES(%s,%s,%s)",
             (expense_id, pid, share)
         )
     conn.commit()
     cur.close()
     conn.close()
     clear_state(call.message.chat.id)
-
     cat_emoji = next((e for e, n in CATEGORIES if n == state["category"]), "")
     bot.edit_message_text(
-        f"✅ Сохранено!\n\n"
-        f"{cat_emoji} {state['category']} — {state['amount']} руб.\n"
-        f"Разделён поровну на {len(people)} чел. ({round(share, 2)} руб. каждый)",
-        call.message.chat.id,
-        call.message.message_id
+        f"✅ Сохранено!\n\n{cat_emoji} {state['category']} — {state['amount']} руб.\n"
+        f"Разделён поровну на {len(people)} чел. ({round(share,2)} руб. каждый)",
+        call.message.chat.id, call.message.message_id
     )
-
-# ============================================================
-# 18. ВЫБРАТЬ УЧАСТНИКОВ — ЧЕКБОКСЫ
-# ============================================================
 
 def build_pick_markup(people, selected_ids):
     markup = InlineKeyboardMarkup()
     for p in people:
         icon = "✅" if p["id"] in selected_ids else "☐"
-        markup.add(InlineKeyboardButton(
-            f"{icon} {p['name']}",
-            callback_data=f"st_{p['id']}"
-        ))
+        markup.add(InlineKeyboardButton(f"{icon} {p['name']}", callback_data=f"st_{p['id']}"))
     markup.add(InlineKeyboardButton("💾 Сохранить", callback_data="split_save"))
     return markup
 
 @bot.callback_query_handler(func=lambda c: c.data == "split_pick")
 def cb_split_pick(call):
+    log.info(f"cb_split_pick: chat_id={call.message.chat.id}")
     state = get_state(call.message.chat.id)
-
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, name FROM participants WHERE event_id=%s ORDER BY id",
-        (state["event_id"],)
-    )
+    cur.execute("SELECT id, name FROM participants WHERE event_id=%s ORDER BY id", (state["event_id"],))
     people = [{"id": p["id"], "name": p["name"]} for p in cur.fetchall()]
     cur.close()
     conn.close()
-
-    set_state(call.message.chat.id, "expense_split_pick", {
-        **state,
-        "people": people,
-        "selected": []
-    })
-
+    set_state(call.message.chat.id, "expense_split_pick", {**state, "people": people, "selected": []})
     bot.edit_message_text(
         "Отметьте участников расхода:",
-        call.message.chat.id,
-        call.message.message_id,
+        call.message.chat.id, call.message.message_id,
         reply_markup=build_pick_markup(people, [])
     )
 
@@ -579,91 +516,74 @@ def cb_split_toggle(call):
     pid = int(call.data.split("_")[1])
     state = get_state(call.message.chat.id)
     selected = state.get("selected", [])
-
     if pid in selected:
         selected.remove(pid)
     else:
         selected.append(pid)
-
     state["selected"] = selected
     set_state(call.message.chat.id, "expense_split_pick", state)
-
     bot.edit_message_reply_markup(
-        call.message.chat.id,
-        call.message.message_id,
+        call.message.chat.id, call.message.message_id,
         reply_markup=build_pick_markup(state["people"], selected)
     )
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda c: c.data == "split_save")
 def cb_split_save(call):
+    log.info(f"cb_split_save: chat_id={call.message.chat.id}")
     state = get_state(call.message.chat.id)
     selected = state.get("selected", [])
-
     if not selected:
         bot.answer_callback_query(call.id, "Выберите хотя бы одного участника!")
         return
-
     share = state["amount"] / len(selected)
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO expenses(event_id, amount, payer_id, category, split_type) "
-        "VALUES(%s,%s,%s,%s,'selected') RETURNING id",
+        "INSERT INTO expenses(event_id,amount,payer_id,category,split_type) VALUES(%s,%s,%s,%s,'selected') RETURNING id",
         (state["event_id"], state["amount"], state["payer_id"], state["category"])
     )
     expense_id = cur.fetchone()["id"]
     for pid in selected:
         cur.execute(
-            "INSERT INTO expense_shares(expense_id, participant_id, share) VALUES(%s,%s,%s)",
+            "INSERT INTO expense_shares(expense_id,participant_id,share) VALUES(%s,%s,%s)",
             (expense_id, pid, share)
         )
     conn.commit()
     cur.close()
     conn.close()
     clear_state(call.message.chat.id)
-
     people_map = {p["id"]: p["name"] for p in state["people"]}
     names = ", ".join(people_map[pid] for pid in selected if pid in people_map)
     cat_emoji = next((e for e, n in CATEGORIES if n == state["category"]), "")
-
     bot.edit_message_text(
-        f"✅ Сохранено!\n\n"
-        f"{cat_emoji} {state['category']} — {state['amount']} руб.\n"
-        f"Участники: {names}\n"
-        f"({round(share, 2)} руб. каждый)",
-        call.message.chat.id,
-        call.message.message_id
+        f"✅ Сохранено!\n\n{cat_emoji} {state['category']} — {state['amount']} руб.\n"
+        f"Участники: {names}\n({round(share,2)} руб. каждый)",
+        call.message.chat.id, call.message.message_id
     )
 
 # ============================================================
-# 19. СПИСОК РАСХОДОВ
+# СПИСОК РАСХОДОВ
 # ============================================================
 
 def handle_list_expenses(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
-        bot.send_message(msg.chat.id, "Сначала выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
+        bot.send_message(msg.chat.id, "Сначала выберите встречу.", parse_mode="Markdown")
         return
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         SELECT e.id, e.amount, e.category, e.split_type, p.name AS payer
-        FROM expenses e
-        JOIN participants p ON p.id = e.payer_id
-        WHERE e.event_id=%s
-        ORDER BY e.id
+        FROM expenses e JOIN participants p ON p.id=e.payer_id
+        WHERE e.event_id=%s ORDER BY e.id
     """, (ev["id"],))
     expenses = cur.fetchall()
     cur.close()
     conn.close()
-
     if not expenses:
         bot.send_message(msg.chat.id, f"В встрече *{ev['title']}* пока нет расходов.", parse_mode="Markdown")
         return
-
     cat_map = {n: e for e, n in CATEGORIES}
     markup = InlineKeyboardMarkup()
     lines = []
@@ -671,11 +591,7 @@ def handle_list_expenses(msg):
         emoji = cat_map.get(e["category"], "")
         split_label = "все" if e["split_type"] == "all" else "выбранные"
         lines.append(f"{emoji} {e['category']} — {e['amount']} руб. ({e['payer']}, {split_label})")
-        markup.add(InlineKeyboardButton(
-            f"❌  {e['category']}  {e['amount']} руб.",
-            callback_data=f"dex_{e['id']}"
-        ))
-
+        markup.add(InlineKeyboardButton(f"❌ {e['category']} {e['amount']} руб.", callback_data=f"dex_{e['id']}"))
     text = f"🧾 *{ev['title']}*\n\n" + "\n".join(lines) + "\n\n_Нажмите чтобы удалить_"
     bot.send_message(msg.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
@@ -691,90 +607,65 @@ def cb_delete_expense(call):
     bot.edit_message_text("🗑 Расход удалён.", call.message.chat.id, call.message.message_id)
 
 # ============================================================
-# 20. ИТОГИ
+# ИТОГИ
 # ============================================================
 
 def handle_balance(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
-        bot.send_message(msg.chat.id, "Сначала выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
+        bot.send_message(msg.chat.id, "Сначала выберите встречу.", parse_mode="Markdown")
         return
-
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("SELECT id, name FROM participants WHERE event_id=%s", (ev["id"],))
     people = {row["id"]: row["name"] for row in cur.fetchall()}
-
     if not people:
         bot.send_message(msg.chat.id, "Нет участников.")
         conn.close()
         return
-
     cur.execute("SELECT id, amount, payer_id FROM expenses WHERE event_id=%s", (ev["id"],))
     expenses = cur.fetchall()
-
     if not expenses:
         bot.send_message(msg.chat.id, f"В встрече *{ev['title']}* нет расходов.", parse_mode="Markdown")
         conn.close()
         return
-
     paid = defaultdict(float)
     owed = defaultdict(float)
-
     for e in expenses:
         paid[e["payer_id"]] += e["amount"]
-
     cur.execute("""
-        SELECT es.participant_id, es.share
-        FROM expense_shares es
-        JOIN expenses e ON e.id = es.expense_id
-        WHERE e.event_id=%s
+        SELECT es.participant_id, es.share FROM expense_shares es
+        JOIN expenses e ON e.id=es.expense_id WHERE e.event_id=%s
     """, (ev["id"],))
     for s in cur.fetchall():
         owed[s["participant_id"]] += s["share"]
-
     cur.execute("""
-        SELECT category, SUM(amount) as total
-        FROM expenses WHERE event_id=%s
-        GROUP BY category ORDER BY total DESC
+        SELECT category, SUM(amount) as total FROM expenses
+        WHERE event_id=%s GROUP BY category ORDER BY total DESC
     """, (ev["id"],))
     cats = cur.fetchall()
-
     cur.close()
     conn.close()
-
     balance = {pid: paid[pid] - owed[pid] for pid in set(list(paid) + list(owed))}
-
-    creditors = sorted([[pid, b] for pid, b in balance.items() if b > 0.01],  key=lambda x: -x[1])
+    creditors = sorted([[pid, b]  for pid, b in balance.items() if b >  0.01], key=lambda x: -x[1])
     debtors   = sorted([[pid, -b] for pid, b in balance.items() if b < -0.01], key=lambda x: -x[1])
-
     transfers = []
     while creditors and debtors:
         c, d = creditors[0], debtors[0]
         pay = min(c[1], d[1])
         transfers.append(f"💸 {people.get(d[0],'?')} → {people.get(c[0],'?')}: {round(pay,2)} руб.")
-        c[1] -= pay
-        d[1] -= pay
+        c[1] -= pay; d[1] -= pay
         if c[1] < 0.01: creditors.pop(0)
         if d[1] < 0.01: debtors.pop(0)
-
     cat_map  = {n: e for e, n in CATEGORIES}
     total    = sum(e["amount"] for e in expenses)
-    cat_text = "\n".join(
-        f"{cat_map.get(c['category'],'')} {c['category']}: {round(c['total'],2)} руб."
-        for c in cats
-    )
-
-    text  = f"📊 *Итоги: {ev['title']}*\n\n"
-    text += f"💰 Всего: *{round(total,2)} руб.*\n\n"
-    text += f"*По категориям:*\n{cat_text}\n\n"
+    cat_text = "\n".join(f"{cat_map.get(c['category'],'')} {c['category']}: {round(c['total'],2)} руб." for c in cats)
+    text  = f"📊 *Итоги: {ev['title']}*\n\n💰 Всего: *{round(total,2)} руб.*\n\n*По категориям:*\n{cat_text}\n\n"
     text += ("*Кто кому платит:*\n" + "\n".join(transfers)) if transfers else "✅ Все расчёты закрыты!"
-
     bot.send_message(msg.chat.id, text, parse_mode="Markdown")
 
 # ============================================================
-# 21. WEBHOOK
+# WEBHOOK
 # ============================================================
 
 @app.route(f"/{TOKEN}", methods=["POST"])
@@ -789,19 +680,17 @@ def index():
     return "bot running"
 
 # ============================================================
-# 22. START
+# START
 # ============================================================
 
 if __name__ == "__main__":
     init_db()
-
     if WEBHOOK_HOST:
         webhook_url = f"{WEBHOOK_HOST}/{TOKEN}"
         bot.remove_webhook()
         bot.set_webhook(url=webhook_url)
-        print(f"Webhook set: {webhook_url}")
+        log.info(f"Webhook set: {webhook_url}")
     else:
-        print("RENDER_EXTERNAL_URL not set — webhook not configured")
-
+        log.warning("RENDER_EXTERNAL_URL not set — webhook not configured")
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
