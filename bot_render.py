@@ -1,16 +1,9 @@
-# BOT TRAT — VERSION 7.0
+# BOT TRAT — VERSION 8.0
 """
-Функционал:
-- Создание встреч с названием
-- Несколько встреч одновременно, переключение между ними
-- Добавление участников
-- Добавление расходов: сумма → кто платил → категория → способ разделения
-- Способы разделения: поровну на всех / поровну на выбранных
-- Категории: Еда, Транспорт, Жильё, Развлечения, Покупки
-- Список расходов с удалением
-- Итоговый баланс с именами + статистика по категориям
-- Всё через кнопки, без команд
-- PostgreSQL + состояние в БД
+Ключевое изменение архитектуры:
+- Один универсальный обработчик текстовых сообщений (dispatch)
+- get_state() вызывается ОДИН РАЗ на сообщение, а не в каждой lambda
+- Это устраняет зависание после ввода участников
 """
 
 # ============================================================
@@ -71,7 +64,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS participants (
             id SERIAL PRIMARY KEY,
@@ -79,7 +71,6 @@ def init_db():
             name TEXT NOT NULL
         )
     """)
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS expenses (
             id SERIAL PRIMARY KEY,
@@ -90,7 +81,6 @@ def init_db():
             split_type TEXT NOT NULL
         )
     """)
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS expense_shares (
             id SERIAL PRIMARY KEY,
@@ -99,14 +89,12 @@ def init_db():
             share REAL NOT NULL
         )
     """)
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS active_event (
             chat_id BIGINT PRIMARY KEY,
             event_id INTEGER REFERENCES events(id) ON DELETE SET NULL
         )
     """)
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS user_state (
             chat_id BIGINT PRIMARY KEY,
@@ -188,8 +176,8 @@ def set_active_event(chat_id, event_id):
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("📅 Мои встречи"), KeyboardButton("➕ Новая встреча"))
-    markup.row(KeyboardButton("➕ Расход"), KeyboardButton("🧾 Расходы"))
-    markup.row(KeyboardButton("👥 Участники"), KeyboardButton("📊 Итоги"))
+    markup.row(KeyboardButton("➕ Расход"),       KeyboardButton("🧾 Расходы"))
+    markup.row(KeyboardButton("👥 Участники"),    KeyboardButton("📊 Итоги"))
     return markup
 
 # ============================================================
@@ -201,27 +189,63 @@ def cmd_start(msg):
     clear_state(msg.chat.id)
     bot.send_message(
         msg.chat.id,
-        "👋 Привет! Я помогу учитывать расходы на встречах и делить их между участниками.\n\n"
+        "👋 Привет! Я помогу учитывать расходы на встречах.\n\n"
         "Начните с кнопки *➕ Новая встреча*.",
         parse_mode="Markdown",
         reply_markup=main_menu()
     )
 
 # ============================================================
-# 9. НОВАЯ ВСТРЕЧА
+# 9. ЕДИНЫЙ ДИСПЕТЧЕР ТЕКСТОВЫХ СООБЩЕНИЙ
+# get_state вызывается один раз — нет лишних запросов к БД
 # ============================================================
 
-@bot.message_handler(func=lambda m: m.text == "➕ Новая встреча")
-def new_event(msg):
+@bot.message_handler(func=lambda m: True)
+def dispatch(msg):
+    chat_id = msg.chat.id
+    text = msg.text or ""
+
+    # --- Кнопки главного меню имеют приоритет ---
+    if text == "➕ Новая встреча":
+        return handle_new_event(msg)
+    if text == "📅 Мои встречи":
+        return handle_my_events(msg)
+    if text == "👥 Участники":
+        return handle_show_participants(msg)
+    if text == "➕ Расход":
+        return handle_add_expense_start(msg)
+    if text == "🧾 Расходы":
+        return handle_list_expenses(msg)
+    if text == "📊 Итоги":
+        return handle_balance(msg)
+
+    # --- Один запрос к БД для определения шага ---
+    state = get_state(chat_id)
+    step = state.get("step")
+
+    if step == "event_title":
+        return handle_event_title(msg, state)
+    if step == "add_participants":
+        return handle_save_participants(msg, state)
+    if step == "expense_amount":
+        return handle_expense_amount(msg, state)
+
+    # Непонятное сообщение
+    bot.send_message(chat_id, "Используйте кнопки меню.", reply_markup=main_menu())
+
+# ============================================================
+# 10. НОВАЯ ВСТРЕЧА
+# ============================================================
+
+def handle_new_event(msg):
     clear_state(msg.chat.id)
     set_state(msg.chat.id, "event_title")
     bot.send_message(msg.chat.id, "Введите название встречи:")
 
-@bot.message_handler(func=lambda m: get_state(m.chat.id).get("step") == "event_title")
-def save_event_title(msg):
+def handle_event_title(msg, state):
     title = msg.text.strip()
     if not title:
-        bot.send_message(msg.chat.id, "Название не может быть пустым:")
+        bot.send_message(msg.chat.id, "Название не может быть пустым. Введите ещё раз:")
         return
 
     conn = get_conn()
@@ -240,22 +264,22 @@ def save_event_title(msg):
 
     bot.send_message(
         msg.chat.id,
-        f"✅ Встреча *{title}* создана!\n\nВведите участников через запятую.\nПример: Алиса, Боря, Витя",
+        f"✅ Встреча *{title}* создана!\n\n"
+        f"Введите участников через запятую.\n"
+        f"Пример: Алиса, Боря, Витя",
         parse_mode="Markdown"
     )
 
 # ============================================================
-# 10. ДОБАВЛЕНИЕ УЧАСТНИКОВ
+# 11. ДОБАВЛЕНИЕ УЧАСТНИКОВ
 # ============================================================
 
-@bot.message_handler(func=lambda m: get_state(m.chat.id).get("step") == "add_participants")
-def save_participants(msg):
+def handle_save_participants(msg, state):
     names = [x.strip() for x in msg.text.split(",") if x.strip()]
     if not names:
         bot.send_message(msg.chat.id, "Введите хотя бы одно имя через запятую:")
         return
 
-    state = get_state(msg.chat.id)
     event_id = state.get("event_id")
     if not event_id:
         bot.send_message(msg.chat.id, "Ошибка: встреча не найдена. Создайте новую.")
@@ -276,16 +300,16 @@ def save_participants(msg):
     clear_state(msg.chat.id)
     bot.send_message(
         msg.chat.id,
-        f"✅ Участники добавлены: {', '.join(names)}\n\nМожно добавлять расходы!",
+        f"✅ Участники добавлены: *{', '.join(names)}*\n\nМожно добавлять расходы!",
+        parse_mode="Markdown",
         reply_markup=main_menu()
     )
 
 # ============================================================
-# 11. МОИ ВСТРЕЧИ
+# 12. МОИ ВСТРЕЧИ
 # ============================================================
 
-@bot.message_handler(func=lambda m: m.text == "📅 Мои встречи")
-def my_events(msg):
+def handle_my_events(msg):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -314,7 +338,7 @@ def my_events(msg):
     bot.send_message(msg.chat.id, "Выберите активную встречу:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("sev_"))
-def switch_event(call):
+def cb_switch_event(call):
     event_id = int(call.data.split("_")[1])
     set_active_event(call.message.chat.id, event_id)
 
@@ -333,11 +357,10 @@ def switch_event(call):
     )
 
 # ============================================================
-# 12. УЧАСТНИКИ ТЕКУЩЕЙ ВСТРЕЧИ
+# 13. УЧАСТНИКИ ТЕКУЩЕЙ ВСТРЕЧИ
 # ============================================================
 
-@bot.message_handler(func=lambda m: m.text == "👥 Участники")
-def show_participants(msg):
+def handle_show_participants(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
         bot.send_message(msg.chat.id, "Сначала создайте или выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
@@ -358,11 +381,10 @@ def show_participants(msg):
     bot.send_message(msg.chat.id, f"👥 *{ev['title']}*\n\n{names}", parse_mode="Markdown")
 
 # ============================================================
-# 13. ДОБАВИТЬ РАСХОД — СУММА
+# 14. ДОБАВИТЬ РАСХОД — СУММА
 # ============================================================
 
-@bot.message_handler(func=lambda m: m.text == "➕ Расход")
-def add_expense_start(msg):
+def handle_add_expense_start(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
         bot.send_message(msg.chat.id, "Сначала создайте или выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
@@ -381,14 +403,13 @@ def add_expense_start(msg):
 
     clear_state(msg.chat.id)
     set_state(msg.chat.id, "expense_amount", {"event_id": ev["id"]})
-    bot.send_message(msg.chat.id, f"📅 *{ev['title']}*\n\nВведите сумму расхода:", parse_mode="Markdown")
+    bot.send_message(
+        msg.chat.id,
+        f"📅 *{ev['title']}*\n\nВведите сумму расхода:",
+        parse_mode="Markdown"
+    )
 
-# ============================================================
-# 14. СУММА → КТО ПЛАТИЛ
-# ============================================================
-
-@bot.message_handler(func=lambda m: get_state(m.chat.id).get("step") == "expense_amount")
-def expense_amount(msg):
+def handle_expense_amount(msg, state):
     try:
         amount = float(msg.text.replace(",", "."))
         if amount <= 0:
@@ -397,7 +418,6 @@ def expense_amount(msg):
         bot.send_message(msg.chat.id, "Введите положительное число, например: 1500 или 350.50")
         return
 
-    state = get_state(msg.chat.id)
     event_id = state["event_id"]
     set_state(msg.chat.id, "expense_payer", {"event_id": event_id, "amount": amount})
 
@@ -412,14 +432,19 @@ def expense_amount(msg):
     for p in people:
         markup.add(InlineKeyboardButton(p["name"], callback_data=f"ep_{p['id']}"))
 
-    bot.send_message(msg.chat.id, f"Сумма: *{amount} руб.*\n\nКто оплатил?", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(
+        msg.chat.id,
+        f"Сумма: *{amount} руб.*\n\nКто оплатил?",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
 
 # ============================================================
 # 15. КТО ПЛАТИЛ → КАТЕГОРИЯ
 # ============================================================
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ep_"))
-def expense_payer(call):
+def cb_expense_payer(call):
     payer_id = int(call.data.split("_")[1])
     state = get_state(call.message.chat.id)
 
@@ -445,7 +470,7 @@ def expense_payer(call):
 # ============================================================
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("ec_"))
-def expense_category(call):
+def cb_expense_category(call):
     category = call.data[3:]
     state = get_state(call.message.chat.id)
 
@@ -457,8 +482,8 @@ def expense_category(call):
     })
 
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("👥 Поровну на всех", callback_data="split_all"))
-    markup.add(InlineKeyboardButton("✅ Выбрать участников", callback_data="split_selected"))
+    markup.add(InlineKeyboardButton("👥 Поровну на всех",     callback_data="split_all"))
+    markup.add(InlineKeyboardButton("✅ Выбрать участников",  callback_data="split_pick"))
 
     bot.edit_message_text(
         "Как разделить расход?",
@@ -468,11 +493,11 @@ def expense_category(call):
     )
 
 # ============================================================
-# 17. ПОРОВНУ НА ВСЕХ → СОХРАНИТЬ
+# 17. ПОРОВНУ НА ВСЕХ
 # ============================================================
 
 @bot.callback_query_handler(func=lambda c: c.data == "split_all")
-def split_all(call):
+def cb_split_all(call):
     state = get_state(call.message.chat.id)
     event_id = state["event_id"]
 
@@ -483,17 +508,16 @@ def split_all(call):
     share = state["amount"] / len(people)
 
     cur.execute(
-        "INSERT INTO expenses(event_id, amount, payer_id, category, split_type) VALUES(%s,%s,%s,%s,'all') RETURNING id",
+        "INSERT INTO expenses(event_id, amount, payer_id, category, split_type) "
+        "VALUES(%s,%s,%s,%s,'all') RETURNING id",
         (event_id, state["amount"], state["payer_id"], state["category"])
     )
     expense_id = cur.fetchone()["id"]
-
     for pid in people:
         cur.execute(
             "INSERT INTO expense_shares(expense_id, participant_id, share) VALUES(%s,%s,%s)",
             (expense_id, pid, share)
         )
-
     conn.commit()
     cur.close()
     conn.close()
@@ -501,55 +525,57 @@ def split_all(call):
 
     cat_emoji = next((e for e, n in CATEGORIES if n == state["category"]), "")
     bot.edit_message_text(
-        f"✅ Расход сохранён!\n\n"
+        f"✅ Сохранено!\n\n"
         f"{cat_emoji} {state['category']} — {state['amount']} руб.\n"
-        f"Разделён поровну на {len(people)} участников ({round(share, 2)} руб. каждый)",
+        f"Разделён поровну на {len(people)} чел. ({round(share, 2)} руб. каждый)",
         call.message.chat.id,
         call.message.message_id
     )
 
 # ============================================================
-# 18. ВЫБРАТЬ УЧАСТНИКОВ — ТОГЛЫ
+# 18. ВЫБРАТЬ УЧАСТНИКОВ — ЧЕКБОКСЫ
 # ============================================================
 
-def build_split_markup(people, selected_ids):
+def build_pick_markup(people, selected_ids):
     markup = InlineKeyboardMarkup()
     for p in people:
-        check = "✅" if p["id"] in selected_ids else "☐"
+        icon = "✅" if p["id"] in selected_ids else "☐"
         markup.add(InlineKeyboardButton(
-            f"{check} {p['name']}",
+            f"{icon} {p['name']}",
             callback_data=f"st_{p['id']}"
         ))
     markup.add(InlineKeyboardButton("💾 Сохранить", callback_data="split_save"))
     return markup
 
-@bot.callback_query_handler(func=lambda c: c.data == "split_selected")
-def split_selected(call):
+@bot.callback_query_handler(func=lambda c: c.data == "split_pick")
+def cb_split_pick(call):
     state = get_state(call.message.chat.id)
-    event_id = state["event_id"]
 
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id, name FROM participants WHERE event_id=%s ORDER BY id", (event_id,))
+    cur.execute(
+        "SELECT id, name FROM participants WHERE event_id=%s ORDER BY id",
+        (state["event_id"],)
+    )
     people = [{"id": p["id"], "name": p["name"]} for p in cur.fetchall()]
     cur.close()
     conn.close()
 
-    set_state(call.message.chat.id, "expense_split_selected", {
+    set_state(call.message.chat.id, "expense_split_pick", {
         **state,
         "people": people,
         "selected": []
     })
 
     bot.edit_message_text(
-        "Выберите участников расхода:",
+        "Отметьте участников расхода:",
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=build_split_markup(people, [])
+        reply_markup=build_pick_markup(people, [])
     )
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("st_"))
-def split_toggle(call):
+def cb_split_toggle(call):
     pid = int(call.data.split("_")[1])
     state = get_state(call.message.chat.id)
     selected = state.get("selected", [])
@@ -560,17 +586,17 @@ def split_toggle(call):
         selected.append(pid)
 
     state["selected"] = selected
-    set_state(call.message.chat.id, "expense_split_selected", state)
+    set_state(call.message.chat.id, "expense_split_pick", state)
 
     bot.edit_message_reply_markup(
         call.message.chat.id,
         call.message.message_id,
-        reply_markup=build_split_markup(state["people"], selected)
+        reply_markup=build_pick_markup(state["people"], selected)
     )
     bot.answer_callback_query(call.id)
 
 @bot.callback_query_handler(func=lambda c: c.data == "split_save")
-def split_save(call):
+def cb_split_save(call):
     state = get_state(call.message.chat.id)
     selected = state.get("selected", [])
 
@@ -583,17 +609,16 @@ def split_save(call):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO expenses(event_id, amount, payer_id, category, split_type) VALUES(%s,%s,%s,%s,'selected') RETURNING id",
+        "INSERT INTO expenses(event_id, amount, payer_id, category, split_type) "
+        "VALUES(%s,%s,%s,%s,'selected') RETURNING id",
         (state["event_id"], state["amount"], state["payer_id"], state["category"])
     )
     expense_id = cur.fetchone()["id"]
-
     for pid in selected:
         cur.execute(
             "INSERT INTO expense_shares(expense_id, participant_id, share) VALUES(%s,%s,%s)",
             (expense_id, pid, share)
         )
-
     conn.commit()
     cur.close()
     conn.close()
@@ -604,9 +629,9 @@ def split_save(call):
     cat_emoji = next((e for e, n in CATEGORIES if n == state["category"]), "")
 
     bot.edit_message_text(
-        f"✅ Расход сохранён!\n\n"
+        f"✅ Сохранено!\n\n"
         f"{cat_emoji} {state['category']} — {state['amount']} руб.\n"
-        f"Разделён между: {names}\n"
+        f"Участники: {names}\n"
         f"({round(share, 2)} руб. каждый)",
         call.message.chat.id,
         call.message.message_id
@@ -616,11 +641,10 @@ def split_save(call):
 # 19. СПИСОК РАСХОДОВ
 # ============================================================
 
-@bot.message_handler(func=lambda m: m.text == "🧾 Расходы")
-def list_expenses(msg):
+def handle_list_expenses(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
-        bot.send_message(msg.chat.id, "Сначала создайте или выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
+        bot.send_message(msg.chat.id, "Сначала выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
         return
 
     conn = get_conn()
@@ -643,21 +667,20 @@ def list_expenses(msg):
     cat_map = {n: e for e, n in CATEGORIES}
     markup = InlineKeyboardMarkup()
     lines = []
-
     for e in expenses:
         emoji = cat_map.get(e["category"], "")
         split_label = "все" if e["split_type"] == "all" else "выбранные"
-        lines.append(f"{emoji} {e['category']} — {e['amount']} руб. (платил {e['payer']}, {split_label})")
+        lines.append(f"{emoji} {e['category']} — {e['amount']} руб. ({e['payer']}, {split_label})")
         markup.add(InlineKeyboardButton(
-            f"❌  {e['category']} {e['amount']} руб.",
+            f"❌  {e['category']}  {e['amount']} руб.",
             callback_data=f"dex_{e['id']}"
         ))
 
-    text = f"🧾 *{ev['title']}*\n\n" + "\n".join(lines) + "\n\n_Нажмите на расход чтобы удалить_"
+    text = f"🧾 *{ev['title']}*\n\n" + "\n".join(lines) + "\n\n_Нажмите чтобы удалить_"
     bot.send_message(msg.chat.id, text, parse_mode="Markdown", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("dex_"))
-def delete_expense(call):
+def cb_delete_expense(call):
     expense_id = int(call.data.split("_")[1])
     conn = get_conn()
     cur = conn.cursor()
@@ -668,14 +691,13 @@ def delete_expense(call):
     bot.edit_message_text("🗑 Расход удалён.", call.message.chat.id, call.message.message_id)
 
 # ============================================================
-# 20. ИТОГИ / БАЛАНС
+# 20. ИТОГИ
 # ============================================================
 
-@bot.message_handler(func=lambda m: m.text == "📊 Итоги")
-def show_balance(msg):
+def handle_balance(msg):
     ev = get_active_event(msg.chat.id)
     if not ev:
-        bot.send_message(msg.chat.id, "Сначала создайте или выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
+        bot.send_message(msg.chat.id, "Сначала выберите встречу через *📅 Мои встречи*.", parse_mode="Markdown")
         return
 
     conn = get_conn()
@@ -722,43 +744,32 @@ def show_balance(msg):
     cur.close()
     conn.close()
 
-    balance = defaultdict(float)
-    for pid in set(list(paid.keys()) + list(owed.keys())):
-        balance[pid] = paid[pid] - owed[pid]
+    balance = {pid: paid[pid] - owed[pid] for pid in set(list(paid) + list(owed))}
 
-    creditors = sorted([[pid, bal] for pid, bal in balance.items() if bal > 0.01], key=lambda x: -x[1])
-    debtors = sorted([[pid, -bal] for pid, bal in balance.items() if bal < -0.01], key=lambda x: -x[1])
+    creditors = sorted([[pid, b] for pid, b in balance.items() if b > 0.01],  key=lambda x: -x[1])
+    debtors   = sorted([[pid, -b] for pid, b in balance.items() if b < -0.01], key=lambda x: -x[1])
 
     transfers = []
     while creditors and debtors:
-        c = creditors[0]
-        d = debtors[0]
+        c, d = creditors[0], debtors[0]
         pay = min(c[1], d[1])
-        transfers.append(
-            f"💸 {people.get(d[0], '?')} → {people.get(c[0], '?')}: {round(pay, 2)} руб."
-        )
+        transfers.append(f"💸 {people.get(d[0],'?')} → {people.get(c[0],'?')}: {round(pay,2)} руб.")
         c[1] -= pay
         d[1] -= pay
-        if c[1] < 0.01:
-            creditors.pop(0)
-        if d[1] < 0.01:
-            debtors.pop(0)
+        if c[1] < 0.01: creditors.pop(0)
+        if d[1] < 0.01: debtors.pop(0)
 
-    cat_map = {n: e for e, n in CATEGORIES}
-    total = sum(e["amount"] for e in expenses)
-    cat_lines = "\n".join(
-        f"{cat_map.get(c['category'], '')} {c['category']}: {round(c['total'], 2)} руб."
+    cat_map  = {n: e for e, n in CATEGORIES}
+    total    = sum(e["amount"] for e in expenses)
+    cat_text = "\n".join(
+        f"{cat_map.get(c['category'],'')} {c['category']}: {round(c['total'],2)} руб."
         for c in cats
     )
 
-    text = f"📊 *Итоги: {ev['title']}*\n\n"
-    text += f"💰 Всего потрачено: *{round(total, 2)} руб.*\n\n"
-    text += f"*По категориям:*\n{cat_lines}\n\n"
-
-    if transfers:
-        text += "*Кто кому платит:*\n" + "\n".join(transfers)
-    else:
-        text += "✅ Все расчёты закрыты, никто никому не должен!"
+    text  = f"📊 *Итоги: {ev['title']}*\n\n"
+    text += f"💰 Всего: *{round(total,2)} руб.*\n\n"
+    text += f"*По категориям:*\n{cat_text}\n\n"
+    text += ("*Кто кому платит:*\n" + "\n".join(transfers)) if transfers else "✅ Все расчёты закрыты!"
 
     bot.send_message(msg.chat.id, text, parse_mode="Markdown")
 
