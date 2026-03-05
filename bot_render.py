@@ -51,7 +51,13 @@ app = Flask(__name__)
 # ============================================================
 
 def get_conn():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    # sslmode=require обязателен для Render PostgreSQL
+    # connect_timeout предотвращает бесконечное зависание
+    url = DATABASE_URL
+    if "sslmode" not in url:
+        sep = "&" if "?" in url else "?"
+        url = url + sep + "sslmode=require"
+    conn = psycopg2.connect(url, cursor_factory=RealDictCursor, connect_timeout=10)
     return conn
 
 def init_db():
@@ -302,17 +308,26 @@ def handle_save_participants(msg, state):
         clear_state(msg.chat.id)
         return
 
-    conn = get_conn()
-    cur = conn.cursor()
-    for name in names:
-        cur.execute(
-            "INSERT INTO participants(event_id, name) VALUES(%s, %s)",
-            (event_id, name)
-        )
-        log.info(f"handle_save_participants: inserted {name} into event {event_id}")
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        log.info("handle_save_participants: opening connection")
+        conn = get_conn()
+        log.info("handle_save_participants: connection opened")
+        cur = conn.cursor()
+        for name in names:
+            cur.execute(
+                "INSERT INTO participants(event_id, name) VALUES(%s, %s)",
+                (event_id, name)
+            )
+            log.info(f"handle_save_participants: inserted {name}")
+        conn.commit()
+        log.info("handle_save_participants: committed")
+        cur.close()
+        conn.close()
+        log.info("handle_save_participants: connection closed")
+    except Exception as e:
+        log.error(f"handle_save_participants: DB ERROR: {e}")
+        bot.send_message(msg.chat.id, f"Ошибка базы данных: {e}")
+        return
 
     clear_state(msg.chat.id)
     bot.send_message(
