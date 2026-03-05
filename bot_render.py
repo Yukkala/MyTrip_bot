@@ -714,14 +714,16 @@ def index():
 # START
 # ============================================================
 
+# Выполняется при импорте модуля — работает и с gunicorn, и с python напрямую
+init_db()
+if WEBHOOK_HOST:
+    webhook_url = f"{WEBHOOK_HOST}/{TOKEN}"
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+    log.info(f"Webhook set: {webhook_url}")
+else:
+    log.warning("RENDER_EXTERNAL_URL not set — webhook not configured")
+
 if __name__ == "__main__":
-    init_db()
-    if WEBHOOK_HOST:
-        webhook_url = f"{WEBHOOK_HOST}/{TOKEN}"
-        bot.remove_webhook()
-        bot.set_webhook(url=webhook_url)
-        log.info(f"Webhook set: {webhook_url}")
-    else:
-        log.warning("RENDER_EXTERNAL_URL not set — webhook not configured")
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
