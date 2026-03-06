@@ -702,7 +702,7 @@ def handle_balance(msg):
 # WEBHOOK
 # ============================================================
 
-@app.route(f"/{TOKEN}", methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     try:
         json_str = request.get_data().decode("UTF-8")
@@ -725,7 +725,7 @@ def setup():
     try:
         init_db()
         if WEBHOOK_HOST:
-            webhook_url = f"{WEBHOOK_HOST}/{TOKEN}"
+            webhook_url = f"{WEBHOOK_HOST}/webhook"
             bot.remove_webhook()
             result = bot.set_webhook(url=webhook_url)
             msg = f"Webhook set: {webhook_url} | result={result}"
