@@ -7,11 +7,7 @@
 import os
 import json
 import logging
-import threading
-import time
-import requests as http_requests
 from collections import defaultdict
-from flask import Flask, request
 import telebot
 from telebot.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -36,7 +32,6 @@ log = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-WEBHOOK_HOST = os.environ.get("RENDER_EXTERNAL_URL")
 
 CATEGORIES = [
     ("🍕", "Еда"),
@@ -47,7 +42,6 @@ CATEGORIES = [
 ]
 
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
 
 # ============================================================
 # DB
@@ -699,88 +693,10 @@ def handle_balance(msg):
     bot.send_message(msg.chat.id, text, parse_mode="Markdown")
 
 # ============================================================
-# WEBHOOK
-# ============================================================
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        json_str = request.get_data().decode("UTF-8")
-        log.info(f"webhook: incoming data: {json_str[:200]}")
-        update = telebot.types.Update.de_json(json_str)
-        log.info(f"webhook: update_id={update.update_id}")
-        bot.process_new_updates([update])
-        log.info("webhook: processed ok")
-    except Exception as e:
-        log.error(f"webhook: ERROR: {e}", exc_info=True)
-    return "!", 200
-
-@app.route("/")
-def index():
-    return "bot running"
-
-@app.route("/setup")
-def setup():
-    """Вызовите один раз после деплоя: https://your-app.onrender.com/setup"""
-    try:
-        init_db()
-        if WEBHOOK_HOST:
-            webhook_url = f"{WEBHOOK_HOST}/webhook"
-            bot.remove_webhook()
-            result = bot.set_webhook(url=webhook_url)
-            msg = f"Webhook set: {webhook_url} | result={result}"
-        else:
-            msg = "RENDER_EXTERNAL_URL not set"
-        log.info(f"setup: {msg}")
-        return msg, 200
-    except Exception as e:
-        log.error(f"setup error: {e}")
-        return f"Error: {e}", 500
-
-@app.route("/status")
-def status():
-    """Проверить текущий вебхук."""
-    info = bot.get_webhook_info()
-    return {
-        "url": info.url,
-        "pending_update_count": info.pending_update_count,
-        "last_error_message": info.last_error_message,
-    }, 200
-
-# ============================================================
 # START
 # ============================================================
 
-def self_ping():
-    """Пингует сервис каждые 10 минут чтобы Render не усыплял его."""
-    if not WEBHOOK_HOST:
-        return
-    while True:
-        time.sleep(600)  # 10 минут
-        try:
-            http_requests.get(f"{WEBHOOK_HOST}/", timeout=10)
-            log.info("self_ping: ok")
-        except Exception as e:
-            log.warning(f"self_ping: failed: {e}")
-
-# Запускаем self-ping в фоне
-ping_thread = threading.Thread(target=self_ping, daemon=True)
-ping_thread.start()
-
-init_db()
-
-# Устанавливаем webhook сразу при старте
-if WEBHOOK_HOST:
-    try:
-        webhook_url = f"{WEBHOOK_HOST}/webhook"
-        bot.remove_webhook()
-        result = bot.set_webhook(url=webhook_url)
-        log.info(f"Startup webhook set: {webhook_url} | result={result}")
-    except Exception as e:
-        log.error(f"Startup webhook error: {e}")
-else:
-    log.warning("RENDER_EXTERNAL_URL not set")
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    init_db()
+    bot.remove_webhook()
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
