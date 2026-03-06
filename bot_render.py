@@ -704,9 +704,15 @@ def handle_balance(msg):
 
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
+    try:
+        json_str = request.get_data().decode("UTF-8")
+        log.info(f"webhook: incoming data: {json_str[:200]}")
+        update = telebot.types.Update.de_json(json_str)
+        log.info(f"webhook: update_id={update.update_id}")
+        bot.process_new_updates([update])
+        log.info("webhook: processed ok")
+    except Exception as e:
+        log.error(f"webhook: ERROR: {e}", exc_info=True)
     return "!", 200
 
 @app.route("/")
