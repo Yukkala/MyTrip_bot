@@ -769,6 +769,18 @@ ping_thread.start()
 
 init_db()
 
+# Устанавливаем webhook сразу при старте
+if WEBHOOK_HOST:
+    try:
+        webhook_url = f"{WEBHOOK_HOST}/webhook"
+        bot.remove_webhook()
+        result = bot.set_webhook(url=webhook_url)
+        log.info(f"Startup webhook set: {webhook_url} | result={result}")
+    except Exception as e:
+        log.error(f"Startup webhook error: {e}")
+else:
+    log.warning("RENDER_EXTERNAL_URL not set")
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
